@@ -19,7 +19,7 @@ package org.apache.spark.partial
 
 import org.apache.spark._
 import org.apache.spark.rdd.RDD
-import org.apache.spark.scheduler.JobListener
+import org.apache.spark.scheduler.{PartialJobListener, JobListener}
 
 /**
  * A JobListener for an approximate single-result action, such as count() or non-parallel reduce().
@@ -35,7 +35,7 @@ private[spark] class ApproximateActionListener[T, U, R](
     func: (TaskContext, Iterator[T]) => U,
     evaluator: ApproximateEvaluator[U, R],
     timeout: Long)
-  extends JobListener {
+  extends PartialJobListener[T,U,R] {
 
   val startTime = System.currentTimeMillis()
   val totalTasks = rdd.partitions.size

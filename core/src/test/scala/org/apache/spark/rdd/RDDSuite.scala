@@ -17,6 +17,9 @@
 
 package org.apache.spark.rdd
 
+
+import org.apache.spark.partial.{PartialActionListener, IncompleteResultsException}
+
 import scala.collection.mutable.{ArrayBuffer, HashMap}
 import scala.collection.JavaConverters._
 import scala.reflect.ClassTag
@@ -25,7 +28,8 @@ import org.scalatest.FunSuite
 
 import org.apache.spark._
 import org.apache.spark.SparkContext._
-import org.apache.spark.util.Utils
+import org.apache.spark.util.{TaskTestingUtility, Utils}
+import scala.Some
 
 import org.apache.spark.api.java.{JavaRDD, JavaSparkContext}
 import org.apache.spark.rdd.RDDSuiteUtils._
@@ -86,6 +90,118 @@ class RDDSuite extends FunSuite with SharedSparkContext {
     val simpleRdd = sc.makeRDD(uniformDistro, 10)
     assert(error(simpleRdd.countApproxDistinct(8, 0), size) < 0.2)
     assert(error(simpleRdd.countApproxDistinct(12, 0), size) < 0.1)
+  }
+
+  test("partialReduce") {
+
+    val stringConcatFunc : (String,String) => String = _ + ", " + _
+
+    val simpleRDD = sc.parallelize(Seq("foo","bar"))
+    val exception1 = intercept[IllegalArgumentException] {
+      simpleRDD.partialReduce(stringConcatFunc,1.01)
+    }
+    val msg1 = exception1.getMessage
+    assert(msg1.contains("requirement failed: minimumResultsPercentage of 101.0% is not > 0% and <= 100%"),
+      s"Incorrect Exception message: ${msg1}")
+    val exception2 = intercept[IllegalArgumentException] {
+      simpleRDD.partialReduce(stringConcatFunc,-0.10)
+    }
+    val msg2 = exception2.getMessage
+    assert(msg2.contains("requirement failed: minimumResultsPercentage of -10.0% is not > 0% and <= 100%"),
+      s"Incorrect Exception message: ${msg2}")
+//    val exception3 = intercept[IllegalArgumentException] {
+//      simpleRDD.partialReduce(stringConcatFunc,0.00)
+//    }
+//    val msg3 = exception3.getMessage
+//    assert(msg3.contains("requirement failed: minimumResultsPercentage of 0.0% is not > 0% and <= 100%"),
+//      s"Incorrect Exception message: ${msg3}")
+    //TODO make sure inclusive boundary values work
+
+    var cmds = (for (i <- 1 to 11) yield s"Success $i"):+"sleep 2000 12"
+    val cmdsRDD = sc.parallelize(cmds,4)
+      .map(_.split(" "))
+      .map(TaskTestingUtility.control(_))
+
+    // testing Strings and no timeout
+    val standardReduceResult = cmdsRDD.reduce(stringConcatFunc)
+    assert(standardReduceResult.split(", ").size === 12,
+      "Standard reduce operation didn't combine results into a comma-separated string with 12 tokens")
+    assert(standardReduceResult.split(", ") === cmdsRDD.partialReduce(stringConcatFunc, 1.00).split(", "),
+      "Partial Reduce at 100% didn't equal standard reduce")
+    assert(cmdsRDD.partialReduce(stringConcatFunc, 0.51).split(", ").size === 9,
+      "Partial reduce with 12 elements over 4 partitions and 51% min threshold didn't return 9 elements")
+
+    // testing Ints w/ and no timeouts
+    val sumFunc : (Int,Int) => Int = _ + _
+    assert(cmdsRDD.map(_.toInt).reduce(sumFunc) == 78,
+      "Standard reduce operation didn't return 78 for sum of numbers from 1 to 12")
+    assert(cmdsRDD.map(_.toInt).partialReduce(sumFunc, 0.51) == 45,
+      "Partial reduce operation with 51% minimum, 4 partitions, " +
+        "and sleeper task on last partition should return 45")
+
+    // testing Timeouts w/ Minimum percentages
+    val startTime = System.currentTimeMillis()
+    val timeoutPeriod = 4000
+    assert(cmdsRDD.partialReduce(stringConcatFunc, 0.51, timeoutPeriod).split(", ").size === 12,
+      "Partial reduce with 12 elements over 4 partitions, 51% min threshold, " +
+        "and timeout value higher than longest running task should return all 12 elements")
+    val runtime = System.currentTimeMillis() - startTime
+    assert(runtime < timeoutPeriod,
+      s"Prior test should have not have run for the full timeout of ${timeoutPeriod}ms, but was: ${runtime}ms")
+
+    assert(cmdsRDD.partialReduce(stringConcatFunc, 0.51, 700).split(", ").size === 9,
+      "Partial reduce with 12 elements over 4 partitions, 51% min threshold, " +
+        "and timeout value lower than longest running task should return 9 elements")
+    val exception4 = intercept[IncompleteResultsException] {
+      cmdsRDD.partialReduce(stringConcatFunc, 0.9, 700)
+    }
+    val msg4 = exception4.getMessage
+    assert(msg4.contains("Timeout occurred prior to 90.0%"),
+    s"Incorrect Exception message: ${msg4}")
+
+
+    // testing function passing version
+    // using the same logical tests as prior iterations,
+    // and reusing the same function used internally with partialReduce
+
+    val startTime2 = System.currentTimeMillis()
+    //TODO reduce this test timing, but the longer period is necessary here, possibly due to closure serialization
+    val stopFunction = PartialActionListener.defaultStopFunction(_:Int,_:Int,_:Long,0.51,Option(6000))
+    assert(cmdsRDD.partialReduce(stringConcatFunc, 6000, stopFunction).split(", ").size === 12,
+      "Partial reduce with 12 elements over 4 partitions, 51% min threshold, " +
+        "and timeout value higher than longest running task should return all 12 elements")
+
+    val runtime2 = System.currentTimeMillis() - startTime2
+    assert(runtime2 < 6000,
+      s"Prior test should have not have run for the full timeout of ${6000}ms, but was: ${runtime2}ms")
+
+    val stopFunction2 = PartialActionListener.defaultStopFunction(_:Int,_:Int,_:Long,0.51,Option(700))
+    assert(cmdsRDD.partialReduce(stringConcatFunc, 700, stopFunction2).split(", ").size === 9,
+      "Partial reduce with 12 elements over 4 partitions, 51% min threshold, " +
+        "and timeout value lower than longest running task should return 9 elements")
+
+    val stopFunction3 = PartialActionListener.defaultStopFunction(_:Int,_:Int,_:Long,0.9,Option(700))
+    val exception5 = intercept[IncompleteResultsException] {
+      cmdsRDD.partialReduce(stringConcatFunc, 700, stopFunction3)
+    }
+    val msg5 = exception5.getMessage
+    assert(msg5.contains("Timeout occurred prior to 90.0%"),
+      s"Incorrect Exception message: ${msg5}")
+
+
+
+
+    // testing Timeouts w/o Minimum percentages
+
+//    assert(cmdsRDD.partialReduce(stringConcatFunc, 0, 700).split(", ").size === 9,
+//      "Partial reduce with 12 elements over 4 partitions, no threshold, " +
+//        "and timeout value lower than longest running task should return 9 elements")
+
+
+    // TODO test job cancellation
+    // TODO add *withInfo operations
+
+
   }
 
   test("SparkContext.union") {
@@ -865,4 +981,5 @@ class RDDSuite extends FunSuite with SharedSparkContext {
       mutableDependencies += dep
     }
   }
+
 }

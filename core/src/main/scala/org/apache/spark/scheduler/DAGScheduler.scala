@@ -36,7 +36,7 @@ import akka.util.Timeout
 import org.apache.spark._
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.executor.TaskMetrics
-import org.apache.spark.partial.{ApproximateActionListener, ApproximateEvaluator, PartialResult}
+import org.apache.spark.partial.{PartialActionListener, ApproximateActionListener, ApproximateEvaluator, PartialResult}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage._
 import org.apache.spark.util.{CallSite, SystemClock, Clock, Utils}
@@ -516,22 +516,26 @@ class DAGScheduler(
     }
   }
 
-  def runApproximateJob[T, U, R](
+
+  //TODO might need to add prior runApproximateJob signature for backwards compatibility
+  def runPartialJob[T, U, R](
       rdd: RDD[T],
       func: (TaskContext, Iterator[T]) => U,
-      evaluator: ApproximateEvaluator[U, R],
       callSite: CallSite,
-      timeout: Long,
-      properties: Properties = null)
+      properties: Properties = null,
+      listener: PartialJobListener[T,U,R],
+      cancelOnReturn: Boolean = false)
     : PartialResult[R] =
   {
-    val listener = new ApproximateActionListener(rdd, func, evaluator, timeout)
     val func2 = func.asInstanceOf[(TaskContext, Iterator[_]) => _]
     val partitions = (0 until rdd.partitions.size).toArray
     val jobId = nextJobId.getAndIncrement()
     eventProcessActor ! JobSubmitted(
       jobId, rdd, func2, partitions, allowLocal = false, callSite, listener, properties)
-    listener.awaitResult()    // Will throw an exception if the job fails
+    val result = listener.awaitResult()
+    //TODO it would be nice to "abort" rather than cancel (i.e. no exceptions, different status)
+    if (cancelOnReturn) cancelJob(jobId);
+    result
   }
 
   /**
@@ -778,6 +782,7 @@ class DAGScheduler(
       abortStage(stage, "No active job for stage " + stage.id)
     }
   }
+
 
   /** Called when stage's parents are available and we can now do its task. */
   private def submitMissingTasks(stage: Stage, jobId: Int) {

@@ -36,14 +36,12 @@ import org.apache.spark.SparkContext._
 import org.apache.spark.annotation.{DeveloperApi, Experimental}
 import org.apache.spark.api.java.JavaRDD
 import org.apache.spark.broadcast.Broadcast
-import org.apache.spark.partial.BoundedDouble
-import org.apache.spark.partial.CountEvaluator
-import org.apache.spark.partial.GroupedCountEvaluator
-import org.apache.spark.partial.PartialResult
+import org.apache.spark.partial._
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.util.{BoundedPriorityQueue, Utils}
 import org.apache.spark.util.collection.OpenHashMap
 import org.apache.spark.util.random.{BernoulliSampler, PoissonSampler, SamplingUtils}
+import scala.Some
 
 /**
  * A Resilient Distributed Dataset (RDD), the basic abstraction in Spark. Represents an immutable,
@@ -84,7 +82,7 @@ abstract class RDD[T: ClassTag](
 
   private[spark] def conf = sc.conf
   // =======================================================================
-  // Methods that should be implemented by subclasses of RDD
+  // Methods that should be implemented by subclasses of RDD                                           `
   // =======================================================================
 
   /**
@@ -862,6 +860,101 @@ abstract class RDD[T: ClassTag](
     // Get the final result out of our Option, or throw an exception if the RDD was empty
     jobResult.getOrElse(throw new UnsupportedOperationException("empty collection"))
   }
+
+  var job: PartialResult[String] = _
+
+  // TODO consider adding more signatures as opposed to named parameters
+  /**
+   * Reduces the elements of this RDD using the specified commutative and
+   * associative binary operator, and stops processing after the reaching timeout
+   * and completing the proportion of work identified by `percentage`
+   *
+   * @param reduceFunction - The operator to reduce the results
+   * @param minResultsPercentage - The minimum percentage of partitions to process within the timeout
+   * @param timeout - The maximum amount of time to process in milliseconds, with a default of 0 (no timeout)
+   * @return The result of the reduce operation
+   */
+  def partialReduce(reduceFunction: (T, T) => T,
+                    minResultsPercentage: Double = 1,
+                    timeout: Long): T = {
+    val cleanF = sc.clean(reduceFunction)
+
+    val processPartition = (ctx: TaskContext,
+                            iter: Iterator[T]) => {
+      //TODO need to check iter.hasNext?
+      iter.reduceLeft(cleanF)
+    }
+    val evaluator = new ReduceEvaluator[T](partitions.size, cleanF)
+    val job = context.runPartialJob(this, processPartition, evaluator, minResultsPercentage, Some(timeout))
+    job.getFinalValue()
+
+    //TODO this should return an Option[PartialResult[T]]
+    //TODO stop running tasks
+
+
+  }
+
+
+  /**
+   * Reduces the elements of this RDD using the specified commutative and
+   * associative binary operator, and stops processing after completing the
+   * proportion of work identified by `percentage`
+   *
+   * @param reduceFunction - The operator to reduce the results
+   * @param minResultsPercentage - The minimum percentage of partitions to process within the timeout
+   * @return The result of the reduce operation
+   */
+  def partialReduce(reduceFunction: (T, T) => T,
+                    minResultsPercentage: Double): T = {
+    val cleanF = sc.clean(reduceFunction)
+
+    val processPartition = (ctx: TaskContext,
+                            iter: Iterator[T]) => {
+      //TODO need to check iter.hasNext?
+      iter.reduceLeft(cleanF)
+    }
+    val evaluator = new ReduceEvaluator[T](partitions.size, cleanF)
+    val job = context.runPartialJob(this, processPartition, evaluator, minResultsPercentage)
+    job.getFinalValue()
+
+    //TODO this should return an Option[PartialResult[T]]
+    //TODO stop running tasks
+
+
+  }
+
+  //TODO - clean these docs up
+  /**
+   * Reduces the elements of this RDD using the specified commutative and
+   * associative binary operator, stops processing at the timeout, or
+   *
+   * @param reduceFunction - The operator to reduce the results
+   * @param timeout - The maximum amount of time to process in milliseconds, with a default of 0 (no timeout)
+   * @param stopFunction - The function to use which calculates when to stop processing
+   * @return The result of the reduce operation
+   */
+  def partialReduce(reduceFunction: (T, T) => T,
+                    timeout: Long,
+                    stopFunction: (Int, Int, Long) => Boolean): T = {
+
+    val cleanF = sc.clean(reduceFunction)
+
+    val processPartition = (ctx: TaskContext,
+                            iter: Iterator[T]) => {
+      //TODO need to check iter.hasNext?
+      iter.reduceLeft(cleanF)
+    }
+
+    val evaluator = new ReduceEvaluator[T](partitions.size, cleanF)
+    val job = context.runPartialJob2(this, processPartition, evaluator, Option(timeout), stopFunction)
+    job.getFinalValue()
+
+    //TODO this should return an Option[PartialResult[T]]
+    //TODO stop running tasks
+
+
+  }
+
 
   /**
    * Aggregate the elements of each partition, and then the results for all the partitions, using a

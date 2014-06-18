@@ -42,7 +42,7 @@ import org.apache.spark.annotation.{DeveloperApi, Experimental}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.deploy.{LocalSparkCluster, SparkHadoopUtil}
 import org.apache.spark.input.WholeTextFileInputFormat
-import org.apache.spark.partial.{ApproximateEvaluator, PartialResult}
+import org.apache.spark.partial._
 import org.apache.spark.rdd._
 import org.apache.spark.scheduler._
 import org.apache.spark.scheduler.cluster.{CoarseGrainedSchedulerBackend, SparkDeploySchedulerBackend, SimrSchedulerBackend}
@@ -1168,13 +1168,71 @@ class SparkContext(config: SparkConf) extends Logging {
       func: (TaskContext, Iterator[T]) => U,
       evaluator: ApproximateEvaluator[U, R],
       timeout: Long): PartialResult[R] = {
+
     val callSite = getCallSite
+
     logInfo("Starting job: " + callSite.shortForm)
     val start = System.nanoTime
-    val result = dagScheduler.runApproximateJob(rdd, func, evaluator, callSite, timeout,
-      localProperties.get)
+
+    val listener = new ApproximateActionListener(rdd, func, evaluator, timeout)
+    val result = dagScheduler.runPartialJob(rdd, func, callSite, localProperties.get, listener)
+
+    logInfo(s"Job finished: $callSite, took ${(System.nanoTime - start) / 1e9}s")
+
+    result
+  }
+
+  /**
+   * :: DeveloperApi ::
+   * Run a job that can return partial results based on a percentage
+   */
+  @DeveloperApi
+  @Experimental
+  def runPartialJob[T, U, R](
+      rdd: RDD[T],
+      func: (TaskContext, Iterator[T]) => U,
+      evaluator: ApproximateEvaluator[U, R],
+      minimumResultsPercentage: Double,
+      timeout: Option[Long] = None): PartialResult[R] = {
+
+    val callSite = getCallSite
+
+    logInfo("Starting job: " + callSite)
+    val start = System.nanoTime
+
+    val listener  = new PartialActionListener[T,U,R](rdd, func, evaluator, minimumResultsPercentage, timeout)
+    val result = dagScheduler.runPartialJob(rdd, func, callSite, localProperties.get, listener, true)
+
+    logInfo(s"Job finished: $callSite, took ${(System.nanoTime - start) / 1e9}s")
+
+    result
+  }
+
+  /**
+   * :: DeveloperApi ::
+   * :: Experimental ::
+   * Run a job that can return partial results using a passed-in function
+   */
+  @DeveloperApi
+  @Experimental
+  def runPartialJob2[T, U, R](
+                              rdd: RDD[T],
+                              func: (TaskContext, Iterator[T]) => U,
+                              evaluator: ApproximateEvaluator[U, R],
+                              timeout: Option[Long] = None,
+                              stopFunction: (Int, Int, Long) => Boolean): PartialResult[R] = {
+
+    val callSite = getCallSite
+
+    logInfo("Starting job: " + callSite)
+    val start = System.nanoTime
+
+    val listener  = new PartialActionListener[T,U,R](rdd, func, evaluator, timeout, stopFunction)
+    val result = dagScheduler.runPartialJob(rdd, func, callSite, localProperties.get, listener, true)
+
     logInfo(
       "Job finished: " + callSite.shortForm + ", took " + (System.nanoTime - start) / 1e9 + " s")
+
     result
   }
 
