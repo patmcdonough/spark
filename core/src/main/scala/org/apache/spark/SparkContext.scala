@@ -1195,15 +1195,13 @@ class SparkContext(config: SparkConf) extends Logging {
       minimumResultsPercentage: Double,
       timeout: Option[Long] = None): PartialResult[R] = {
 
-    val callSite = getCallSite
-
-    logInfo("Starting job: " + callSite)
+    logInfo("Starting job: " + getCallSite)
     val start = System.nanoTime
 
     val listener  = new PartialActionListener[T,U,R](rdd, func, evaluator, minimumResultsPercentage, timeout)
-    val result = dagScheduler.runPartialJob(rdd, func, callSite, localProperties.get, listener, true)
+    val result = dagScheduler.runPartialJob(rdd, func, getCallSite, localProperties.get, listener, true)
 
-    logInfo(s"Job finished: $callSite, took ${(System.nanoTime - start) / 1e9}s")
+    logInfo(s"Job finished: ${getCallSite}, took ${(System.nanoTime - start) / 1e9}s")
 
     result
   }

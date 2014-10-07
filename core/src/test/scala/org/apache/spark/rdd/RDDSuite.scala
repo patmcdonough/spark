@@ -140,12 +140,12 @@ class RDDSuite extends FunSuite with SharedSparkContext {
         "and sleeper task on last partition should return 45")
 
     // testing Timeouts w/ Minimum percentages
-    val startTime = System.currentTimeMillis()
+    val startTime = System.nanoTime()
     val timeoutPeriod = 4000
     assert(cmdsRDD.partialReduce(stringConcatFunc, 0.51, timeoutPeriod).split(", ").size === 12,
       "Partial reduce with 12 elements over 4 partitions, 51% min threshold, " +
         "and timeout value higher than longest running task should return all 12 elements")
-    val runtime = System.currentTimeMillis() - startTime
+    val runtime = System.nanoTime() - startTime
     assert(runtime < timeoutPeriod,
       s"Prior test should have not have run for the full timeout of ${timeoutPeriod}ms, but was: ${runtime}ms")
 
@@ -164,14 +164,14 @@ class RDDSuite extends FunSuite with SharedSparkContext {
     // using the same logical tests as prior iterations,
     // and reusing the same function used internally with partialReduce
 
-    val startTime2 = System.currentTimeMillis()
+    val startTime2 = System.nanoTime()
     //TODO reduce this test timing, but the longer period is necessary here, possibly due to closure serialization
     val stopFunction = PartialActionListener.defaultStopFunction(_:Int,_:Int,_:Long,0.51,Option(6000))
     assert(cmdsRDD.partialReduce(stringConcatFunc, 6000, stopFunction).split(", ").size === 12,
       "Partial reduce with 12 elements over 4 partitions, 51% min threshold, " +
         "and timeout value higher than longest running task should return all 12 elements")
 
-    val runtime2 = System.currentTimeMillis() - startTime2
+    val runtime2 = System.nanoTime() - startTime2
     assert(runtime2 < 6000,
       s"Prior test should have not have run for the full timeout of ${6000}ms, but was: ${runtime2}ms")
 
@@ -188,6 +188,10 @@ class RDDSuite extends FunSuite with SharedSparkContext {
     assert(msg5.contains("Timeout occurred prior to 90.0%"),
       s"Incorrect Exception message: ${msg5}")
 
+    //testing method calls with extra information
+    val reduce = cmdsRDD.partialReduce(stringConcatFunc, 0.51)
+    assert(reduce.split(", ").size === 9,
+      "Partial reduce with 12 elements over 4 partitions and 51% min threshold didn't return 9 elements")
 
 
 
