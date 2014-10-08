@@ -691,7 +691,8 @@ private[nio] class ConnectionManager(
           } catch {
             case e: Exception => {
               logError(s"Exception was thrown while processing message", e)
-              val m = Message.createBufferMessage(bufferMessage.id)
+              val m = Message.createBufferMessage(
+                ByteBuffer.wrap(s"${e.getMessage} \n ${e.getStackTraceString}".getBytes), bufferMessage.id)
               m.hasError = true
               ackMessage = Some(m)
             }
@@ -822,8 +823,13 @@ private[nio] class ConnectionManager(
           promise.failure(new IOException("sendMessageReliably failed without being ACK'd"))
         case Some(ackMessage) =>
           if (ackMessage.hasError) {
-            promise.failure(
-              new IOException("sendMessageReliably failed with ACK that signalled a remote error"))
+            val errorMsgByteBuf = ackMessage.asInstanceOf[BufferMessage].buffers.head
+            val errorMsgBytes = new Array[Byte](errorMsgByteBuf.limit())
+            errorMsgByteBuf.get(errorMsgBytes)
+            val errorMsg = new String(errorMsgBytes)
+            promise.failure(new IOException(
+              s"sendMessageReliably failed with ACK that signalled a remote error: $errorMsg")
+            )
           } else {
             promise.success(ackMessage)
           }
